@@ -1,0 +1,216 @@
+[manifest]
+version = "1.0.0"
+priority = 0
+
+# init the audioOffset variable in main.lua
+[[patches]]
+[patches.pattern]
+target = "main.lua"
+pattern = "checkTables(savedata, defaultSave)"
+position = "after"
+match_indent = true
+payload = '''
+if not savedata.options.audio.audioOffset then
+    savedata.options.audio.audioOffset = 0
+end
+'''
+
+# apply patch to tesound to delay/advance music or sfx based on offset
+[[patches]]
+[patches.pattern]
+target = "main.lua"
+pattern = 'te = require "lib.tesound"'
+position = "after"
+match_indent = true
+payload = '''
+local function hasTag(tags, needle)
+    if tags == needle then
+        return true
+    end
+    if type(tags) == 'table' then
+        for i, v in ipairs(tags) do
+            if v == needle then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function hasMusicTag(tags)
+    return hasTag(tags, 'music')
+end
+
+local function hasSfxTag(tags)
+    return hasTag(tags, 'sfx')
+end
+
+local function isGameplayHitsound(sound)
+    if not sounds then
+        return false
+    end
+    return sound == sounds.click
+        or sound == sounds.hold
+        or sound == sounds.barely
+        or sound == sounds.tap
+        or sound == sounds.side
+end
+
+local delayedTesoundPlays = {}
+local originalTePlay
+
+local function getAudioOffsetSeconds()
+    return (savedata.options.audio.audioOffset or 0) / 1000
+end
+
+local function scheduleDelayedTesoundPlay(sound, sourceType, tags, volume, pitch, func)
+    delayedTesoundPlays[#delayedTesoundPlays + 1] = {
+        playTime = love.timer.getTime() + math.abs(getAudioOffsetSeconds()),
+        sound = sound,
+        sourceType = sourceType,
+        tags = tags,
+        volume = volume,
+        pitch = pitch,
+        func = func
+    }
+end
+
+local function applyOffsetToTesoundChannel(channel)
+    local offsetInSeconds = getAudioOffsetSeconds()
+    if offsetInSeconds == 0 then
+        return
+    end
+
+    local channelData = te.channels and te.channels[channel]
+    local source = channelData and channelData[1]
+    if source and source.seek and source.getDuration then
+        local duration = source:getDuration('seconds')
+        if duration and duration > 0 then
+            source:seek(math.min(offsetInSeconds, duration), 'seconds')
+        end
+    end
+end
+
+local function flushDelayedTesoundPlays()
+    local now = love.timer.getTime()
+    local i = 1
+    while i <= #delayedTesoundPlays do
+        local delayedPlay = delayedTesoundPlays[i]
+        if delayedPlay and now >= delayedPlay.playTime then
+            originalTePlay(
+                delayedPlay.sound,
+                delayedPlay.sourceType,
+                delayedPlay.tags,
+                delayedPlay.volume,
+                delayedPlay.pitch,
+                delayedPlay.func
+            )
+            table.remove(delayedTesoundPlays, i)
+        else
+            i = i + 1
+        end
+    end
+end
+
+local originalTeCleanup = te.cleanup
+te.cleanup = function(...)
+    flushDelayedTesoundPlays()
+    originalTeCleanup()
+end
+
+originalTePlay = te.play
+te.play = function(sound, sourceType, tags, ...)
+    local offsetInSeconds = getAudioOffsetSeconds()
+    if offsetInSeconds < 0 and (hasMusicTag(tags) or hasSfxTag(tags) or isGameplayHitsound(sound)) then
+        scheduleDelayedTesoundPlay(sound, sourceType, tags, ...)
+        return nil
+    end
+
+    local channel = originalTePlay(sound, sourceType, tags, ...)
+    if offsetInSeconds > 0 and hasMusicTag(tags) then
+        applyOffsetToTesoundChannel(channel)
+    end
+    return channel
+end
+
+local originalLovebpmNewTrack = lovebpm.newTrack
+lovebpm.newTrack = function(...)
+    local track = originalLovebpmNewTrack(...)
+    if not track or track.__audioOffsetPatched then
+        return track
+    end
+
+    track.__audioOffsetPatched = true
+
+    local originalTrackSetTime = track.setTime
+    local function applyOffsetToTrack(self)
+        if not self or not originalTrackSetTime or not self.getTime then
+            return
+        end
+
+        local offsetInSeconds = getAudioOffsetSeconds()
+        if offsetInSeconds == 0 then
+            return
+        end
+
+        local targetTime = self:getTime() + offsetInSeconds
+        local totalTime = (self.getTotalTime and self:getTotalTime()) or 0
+        if totalTime and totalTime > 0 then
+            targetTime = math.max(-totalTime, math.min(targetTime, totalTime))
+        end
+
+        originalTrackSetTime(self, targetTime)
+    end
+
+    local originalTrackPlay = track.play
+    track.play = function(self, ...)
+        local result = originalTrackPlay(self, ...)
+        applyOffsetToTrack(self)
+        return result
+    end
+
+    local originalTrackSetBeat = track.setBeat
+    if originalTrackSetBeat then
+        track.setBeat = function(self, beat, ...)
+            local result = originalTrackSetBeat(self, beat, ...)
+            applyOffsetToTrack(self)
+            return result
+        end
+    end
+
+    return track
+end
+'''
+
+# add local entry for new option (no translation support though idk how)
+[[patches]]
+[patches.pattern]
+target = "main.lua"
+pattern = 'loc.load("data/localization.json")'
+position = "after"
+match_indent = true
+payload = '''
+loc.json.optionsAudioOffset = {en = "Audio Offset: @@1@@ @@2@@"}
+'''
+
+# put slider in menu so it can be adjusted in-game
+[[patches]]
+[patches.pattern]
+target = "states/Menu.lua"
+pattern = "self.optionsMenu:addBoolean({'optionsMuteOnFocusLoss','optionsEnabled','optionsDisabled'}, savedata.options.audio, 'muteOnFocusLoss', optionsHeight*5)"
+position = "after"
+match_indent = true
+payload = '''
+self.optionsMenu:addNumber('optionsAudioOffset',savedata.options.audio,'audioOffset',optionsHeight*6,1,{-500,500},sdfunc.save,'ms')
+'''
+
+# keep beat syncing in gameplay while applying offset
+[[patches]]
+[patches.pattern]
+target = "obj/GameManager.lua"
+pattern = "cs.cBeat = cs.source:getBeat()"
+position = "at"
+match_indent = true
+payload = '''
+cs.cBeat = cs.source:getBeat() - self:msToBeat(savedata.options.audio.audioOffset or 0)
+'''
