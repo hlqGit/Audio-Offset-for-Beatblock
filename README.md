@@ -12,7 +12,7 @@ Note: If you use negative offset, the hitsounds will still line up with the visu
 
 # How to Install
 1. You will need to install [lovely injector](https://github.com/ethangreen-dev/lovely-injector/releases/tag/v0.9.0). Lovely injector will allow the code to be initialized when Beatblock starts.
-2. Download the latest release of my mod and leave it as a .zip file.
+2. Download the [latest release](https://github.com/hlqGit/Audio-Offset-for-Beatblock/releases/tag/v0.1.0) of my mod and leave it as a .zip file.
 3. Extract the download of lovely injector, inside should be a `version.dll` file. Open steam and right click on Beatblock and select `Manage > Browse local files`. Move `version.dll` into the directory (should contain `Beatblock.exe`).
 4. Run Beatblock once. Note: You will see a command prompt pop up, that is normal. That is lovely injector working its magic.
 5. Next navigate to where beatblock saves custom levels. For windows, it should be `%AppData%/beatblock`. In this directory, there should be a `Mods` folder (create one if not). 
